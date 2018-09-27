@@ -332,15 +332,11 @@ public class UtxoLedgerServiceImpl implements LedgerService {
                     }
 
                     // 验证地址中的公钥hash160和交易中的公钥hash160是否相等，不相等则说明这笔utxo不属于交易发出者
-                    //TODO: 交易验证逻辑待完善
-//                    if (transaction.needVerifySignature() && !AddressTool.checkPublicKeyHash(fromAddressBytes, user)) {
-//                        Log.warn("public key hash160 check error.");
-//                        return ValidateResult.getFailedResult(CLASS_NAME, LedgerErrorCode.INVALID_INPUT);
-//                    }
                     boolean signtureValidFlag = false;
                     if(transaction.needVerifySignature()){
                         if(transactionSignature != null){
-                            if(fromAddressBytes != null && fromAddressBytes.length != 23 && transactionSignature.getScripts() != null && transactionSignature.getScripts().size()>0){
+                            if(fromAddressBytes != null && fromAddressBytes.length != Address.ADDRESS_LENGTH && transactionSignature.getScripts() != null
+                                    && transactionSignature.getScripts().size()>0){
                                 Script scriptPubkey = new Script(fromAddressBytes);
                                 for (Script scriptSig:transactionSignature.getScripts()) {
                                     signtureValidFlag = scriptSig.correctlyNulsSpends(transaction,0,scriptPubkey);
@@ -395,8 +391,8 @@ public class UtxoLedgerServiceImpl implements LedgerService {
                 if (temporaryFromSet != null && !temporaryFromSet.add(asString(fromBytes))) {
                     if (i > 0) {
                         for (int x = 0; x < i; x++) {
-                            Coin _from = froms.get(i);
-                            temporaryFromSet.remove(asString(_from.getOwner()));
+                            Coin theFrom = froms.get(i);
+                            temporaryFromSet.remove(asString(theFrom.getOwner()));
                         }
                     }
                     return ValidateResult.getFailedResult(CLASS_NAME, TransactionErrorCode.TRANSACTION_REPEATED);

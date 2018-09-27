@@ -98,9 +98,7 @@ public final class DataWord implements Comparable<DataWord> {
 
     private String sData;
 
-    @JsonCreator
     public DataWord(String data) {
-        //this(Hex.decode(data));
         this(data.getBytes());
         this.sData = data;
     }
@@ -438,7 +436,7 @@ public final class DataWord implements Comparable<DataWord> {
     @JsonValue
     @Override
     public String toString() {
-        return sData != null ? sData : Hex.toHexString(data);
+        return sData != null ? sData : toHexString(data);
     }
 
     public String toPrefixString() {

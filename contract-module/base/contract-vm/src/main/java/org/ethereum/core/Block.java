@@ -17,7 +17,16 @@
  */
 package org.ethereum.core;
 
-import java.math.BigInteger;
+import org.ethereum.util.RLP;
+import org.ethereum.util.RLPList;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.spongycastle.util.Arrays;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.ethereum.util.ByteUtil.toHexString;
 
 /**
  * The block in Ethereum is the collection of relevant pieces of information
@@ -32,34 +41,87 @@ import java.math.BigInteger;
  */
 public class Block {
 
-    public Block(byte[] bytes) {
+    private static final Logger logger = LoggerFactory.getLogger("blockchain");
+
+    private BlockHeader header;
+
+    /* Private */
+
+    private byte[] rlpEncoded;
+    private boolean parsed = false;
+
+    /* Constructors */
+
+    private Block() {
     }
 
-    public long getNumber() {
-        return 0;
+    public Block(byte[] rawData) {
+        logger.debug("new from [" + toHexString(rawData) + "]");
+        this.rlpEncoded = rawData;
     }
 
-    public byte[] getHash() {
-        return null;
+    public Block(byte[] parentHash, byte[] hash, long number) {
+        this.header = new BlockHeader(parentHash, hash, number);
+        this.parsed = true;
     }
 
-    public byte[] getParentHash() {
-        return null;
-    }
+    private synchronized void parseRLP() {
+        if (parsed) {
+            return;
+        }
 
-    public byte[] getEncoded() {
-        return null;
-    }
+        RLPList params = RLP.decode2(rlpEncoded);
+        RLPList block = (RLPList) params.get(0);
 
-    public boolean isEqual(Block forkLine) {
-        return false;
+        // Parse Header
+        RLPList header = (RLPList) block.get(0);
+        this.header = new BlockHeader(header);
+        this.parsed = true;
     }
 
     public BlockHeader getHeader() {
-        return null;
+        parseRLP();
+        return this.header;
     }
 
-    public BigInteger getDifficultyBI() {
-        return BigInteger.ZERO;
+    public byte[] getHash() {
+        parseRLP();
+        return this.header.getHash();
     }
+
+    public byte[] getParentHash() {
+        parseRLP();
+        return this.header.getParentHash();
+    }
+
+    public long getNumber() {
+        parseRLP();
+        return this.header.getNumber();
+    }
+
+    public boolean isEqual(Block block) {
+        return Arrays.areEqual(this.getHash(), block.getHash());
+    }
+
+    public byte[] getEncoded() {
+        if (rlpEncoded == null) {
+            byte[] header = this.header.getEncoded();
+
+            List<byte[]> block = getBodyElements();
+            block.add(0, header);
+            byte[][] elements = block.toArray(new byte[block.size()][]);
+
+            this.rlpEncoded = RLP.encodeList(elements);
+        }
+        return rlpEncoded;
+    }
+
+    private List<byte[]> getBodyElements() {
+        parseRLP();
+
+        List<byte[]> body = new ArrayList<>();
+
+        return body;
+    }
+
 }

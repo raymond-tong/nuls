@@ -1,3 +1,27 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2017-2018 nuls.io
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ *
+ */
 package io.nuls.contract.vm;
 
 import io.nuls.contract.vm.code.ClassCode;
@@ -54,7 +78,7 @@ public class VMFactory {
             "java/lang/Byte$ByteCache",
             "java/lang/Short$ShortCache",
             "java/lang/Character$CharacterCache",
-            //"java/lang/Integer$IntegerCache",
+            "java/lang/Integer$IntegerCache",
             "java/lang/Long$LongCache",
     };
 
@@ -72,9 +96,7 @@ public class VMFactory {
         VM = newVM();
         MethodArea.INIT_CLASS_CODES.putAll(VM.methodArea.getClassCodes());
         MethodArea.INIT_METHOD_CODES.putAll(VM.methodArea.getMethodCodes());
-        VM.heap.objects.commit();
         Heap.INIT_OBJECTS.putAll(VM.heap.objects);
-        VM.heap.arrays.commit();
         Heap.INIT_ARRAYS.putAll(VM.heap.arrays);
     }
 

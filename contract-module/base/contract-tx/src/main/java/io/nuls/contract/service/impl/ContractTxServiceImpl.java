@@ -80,6 +80,8 @@ import java.math.BigInteger;
 import java.util.*;
 import java.util.concurrent.locks.ReentrantLock;
 
+import static io.nuls.contract.constant.ContractConstant.MAX_GASLIMIT;
+
 /**
  * @desription:
  * @author: PierreLuo
@@ -137,6 +139,10 @@ public class ContractTxServiceImpl implements ContractTxService, InitializingBea
             Result<Account> accountResult = accountService.getAccount(sender);
             if (accountResult.isFailed()) {
                 return accountResult;
+            }
+
+            if(!ContractUtil.checkPrice(price.longValue())) {
+                return Result.getFailed(ContractErrorCode.CONTRACT_MINIMUM_PRICE);
             }
 
             Account account = accountResult.getData();
@@ -200,6 +206,9 @@ public class ContractTxServiceImpl implements ContractTxService, InitializingBea
                 programCreate.setArgs(args);
             }
             ProgramExecutor track = programExecutor.begin(prevStateRoot);
+            // 验证合约时跳过Gas验证
+            long realGasLimit = programCreate.getGasLimit();
+            programCreate.setGasLimit(MAX_GASLIMIT);
             ProgramResult programResult = track.create(programCreate);
 
             // 执行结果失败时，交易直接返回错误，不上链，不消耗Gas，
@@ -207,6 +216,16 @@ public class ContractTxServiceImpl implements ContractTxService, InitializingBea
                 Result result = Result.getFailed(ContractErrorCode.DATA_ERROR);
                 result.setMsg(ContractUtil.simplifyErrorMsg(programResult.getErrorMessage()));
                 return result;
+            } else {
+                // 其他合法性都通过后，再验证Gas
+                track = programExecutor.begin(prevStateRoot);
+                programCreate.setGasLimit(realGasLimit);
+                programResult = track.create(programCreate);
+                if(!programResult.isSuccess()) {
+                    Result result = Result.getFailed(ContractErrorCode.DATA_ERROR);
+                    result.setMsg(ContractUtil.simplifyErrorMsg(programResult.getErrorMessage()));
+                    return result;
+                }
             }
             /*long gasUsed = programResult.getGasUsed();
             // 预估1.5倍Gas
@@ -491,6 +510,9 @@ public class ContractTxServiceImpl implements ContractTxService, InitializingBea
                 programCreate.setArgs(args);
             }
             ProgramExecutor track = programExecutor.begin(prevStateRoot);
+            // 验证合约时跳过Gas验证
+            long realGasLimit = programCreate.getGasLimit();
+            programCreate.setGasLimit(MAX_GASLIMIT);
             ProgramResult programResult = track.create(programCreate);
 
             // 执行结果失败时，交易直接返回错误，不上链，不消耗Gas，
@@ -498,6 +520,16 @@ public class ContractTxServiceImpl implements ContractTxService, InitializingBea
                 Result result = Result.getFailed(ContractErrorCode.DATA_ERROR);
                 result.setMsg(ContractUtil.simplifyErrorMsg(programResult.getErrorMessage()));
                 return result;
+            } else {
+                // 其他合法性都通过后，再验证Gas
+                track = programExecutor.begin(prevStateRoot);
+                programCreate.setGasLimit(realGasLimit);
+                programResult = track.create(programCreate);
+                if(!programResult.isSuccess()) {
+                    Result result = Result.getFailed(ContractErrorCode.DATA_ERROR);
+                    result.setMsg(ContractUtil.simplifyErrorMsg(programResult.getErrorMessage()));
+                    return result;
+                }
             }
             long gasUsed = gasLimit.longValue();
             Na imputedNa = Na.valueOf(LongUtils.mul(gasUsed, price));
@@ -562,6 +594,10 @@ public class ContractTxServiceImpl implements ContractTxService, InitializingBea
             AssertUtil.canNotEmpty(methodName, "the methodName can not be empty");
             if (value == null) {
                 value = Na.ZERO;
+            }
+
+            if(!ContractUtil.checkPrice(price.longValue())) {
+                return Result.getFailed(ContractErrorCode.CONTRACT_MINIMUM_PRICE);
             }
 
             Result<Account> accountResult = accountService.getAccount(sender);
@@ -649,6 +685,9 @@ public class ContractTxServiceImpl implements ContractTxService, InitializingBea
 
             // 执行VM验证合法性
             ProgramExecutor track = programExecutor.begin(prevStateRoot);
+            // 验证合约时跳过Gas验证
+            long realGasLimit = programCall.getGasLimit();
+            programCall.setGasLimit(MAX_GASLIMIT);
             ProgramResult programResult = track.call(programCall);
 
             // 执行结果失败时，交易直接返回错误，不上链，不消耗Gas
@@ -656,6 +695,16 @@ public class ContractTxServiceImpl implements ContractTxService, InitializingBea
                 Result result = Result.getFailed(ContractErrorCode.DATA_ERROR);
                 result.setMsg(ContractUtil.simplifyErrorMsg(programResult.getErrorMessage()));
                 return result;
+            } else {
+                // 其他合法性都通过后，再验证Gas
+                track = programExecutor.begin(prevStateRoot);
+                programCall.setGasLimit(realGasLimit);
+                programResult = track.call(programCall);
+                if(!programResult.isSuccess()) {
+                    Result result = Result.getFailed(ContractErrorCode.DATA_ERROR);
+                    result.setMsg(ContractUtil.simplifyErrorMsg(programResult.getErrorMessage()));
+                    return result;
+                }
             }
             /*long gasUsed = programResult.getGasUsed();
             // 预估1.5倍Gas
@@ -785,10 +834,14 @@ public class ContractTxServiceImpl implements ContractTxService, InitializingBea
                     tokenTransferInfoPo.setValue(token);
                 } else {
                     String from = args[0][0];
+                    // 转出的不是自己的代币（代币授权逻辑），则不保存token待确认交易，因为有调用合约的待确认交易
+                    if(!sender.equals(from)) {
+                        return Result.getSuccess();
+                    }
                     String to = args[1][0];
                     String tokenValue = args[2][0];
                     BigInteger token = new BigInteger(tokenValue);
-                    Result result = contractBalanceManager.subtractContractToken(sender, contractAddress, token);
+                    Result result = contractBalanceManager.subtractContractToken(from, contractAddress, token);
                     if(result.isFailed()) {
                         return result;
                     }

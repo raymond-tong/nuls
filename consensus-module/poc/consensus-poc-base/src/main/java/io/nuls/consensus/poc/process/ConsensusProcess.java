@@ -43,6 +43,7 @@ import io.nuls.consensus.poc.protocol.tx.RedPunishTransaction;
 import io.nuls.consensus.poc.protocol.tx.YellowPunishTransaction;
 import io.nuls.consensus.poc.provider.BlockQueueProvider;
 import io.nuls.consensus.poc.util.ConsensusTool;
+import io.nuls.contract.constant.ContractConstant;
 import io.nuls.contract.dto.ContractResult;
 import io.nuls.contract.service.ContractService;
 import io.nuls.contract.util.ContractUtil;
@@ -143,8 +144,6 @@ public class ConsensusProcess {
     }
 
     private void packing(MeetingMember self, MeetingRound round) throws IOException, NulsException {
-        Log.debug(round.toString());
-        Log.info("packing 入口==========================");
 
         boolean needCheckAgain = waitReceiveNewestBlock(self, round);
         long start = System.currentTimeMillis();
@@ -327,6 +326,7 @@ public class ConsensusProcess {
         Result<ContractResult> invokeContractResult = null;
         ContractResult contractResult = null;
         Map<String, Coin> contractUsedCoinMap = new HashMap<>();
+        int totalGasUsed = 0;
 
         int count = 0;
         long start = 0;
@@ -340,9 +340,15 @@ public class ConsensusProcess {
         long sizeTime = 0;
         long failed1Use = 0;
         long addTime = 0;
-        //// 为本次打包区块增加一个合约的临时余额区，用于记录本次合约地址余额的变化
-        //contractService.createContractTempBalance();
-
+        // 为本次打包区块增加一个合约的临时余额区，用于记录本次合约地址余额的变化
+        contractService.createContractTempBalance();
+        // 为本次打包区块创建一个批量执行合约的执行器
+        contractService.createBatchExecute(stateRoot);
+        Block tempBlock = new Block();
+        BlockHeader header = new BlockHeader();
+        header.setTime(bd.getTime());
+        tempBlock.setHeader(header);
+        List<ContractResult> contractResultList = new ArrayList<>();
         while (true) {
 
             if ((self.getPackEndTime() - TimeService.currentTimeMillis()) <= 500L) {
@@ -367,6 +373,13 @@ public class ConsensusProcess {
             if ((totalSize + txSize) > ProtocolConstant.MAX_BLOCK_SIZE) {
                 txMemoryPool.addInFirst(tx, false);
                 break;
+            }
+            // 区块中可以消耗的最大Gas总量，超过这个值，则本区块中不再继续组装智能合约交易
+            if (totalGasUsed > ContractConstant.MAX_PACKAGE_GAS) {
+                if(ContractUtil.isContractTransaction(tx)) {
+                    txMemoryPool.addInFirst(tx, false);
+                    continue;
+                }
             }
             count++;
             start = System.nanoTime();
@@ -402,19 +415,13 @@ public class ConsensusProcess {
             outHashSetUse += (System.nanoTime() - start);
 
             // 打包时发现智能合约交易就调用智能合约
-            //if(ContractUtil.isContractTransaction(tx)) {
-            //    invokeContractResult = contractService.invokeContract(tx, height, stateRoot);
-            //    contractResult = invokeContractResult.getData();
-            //    if (contractResult != null) {
-            //        Result<byte[]> handleContractResult = contractService.handleContractResult(
-            //                tx, contractResult,
-            //                stateRoot, bd.getTime(),
-            //                toMaps, contractUsedCoinMap);
-            //        // 更新世界状态
-            //        stateRoot = handleContractResult.getData();
-            //        bd.setStateRoot(stateRoot);
-            //    }
-            //}
+            if(ContractUtil.isContractTransaction(tx)) {
+                contractResult = contractService.batchPackageTx(tx, height, tempBlock, stateRoot, toMaps, contractUsedCoinMap).getData();
+                if (contractResult != null) {
+                    totalGasUsed += contractResult.getGasUsed();
+                    contractResultList.add(contractResult);
+                }
+            }
 
             tx.setBlockHeight(bd.getHeight());
             start = System.nanoTime();
@@ -423,14 +430,16 @@ public class ConsensusProcess {
 
             totalSize += txSize;
         }
-        //// 打包结束后移除临时余额区
-        //contractService.removeContractTempBalance();
-
-        Block tempBlock = new Block();
-        BlockHeader header = new BlockHeader();
-        header.setTime(bd.getTime());
-        tempBlock.setHeader(header);
-        stateRoot = contractService.packageTxs(packingTxList, height, tempBlock, stateRoot, toMaps, contractUsedCoinMap).getData();
+        // 打包结束后移除临时余额区
+        contractService.removeContractTempBalance();
+        stateRoot = contractService.commitBatchExecute().getData();
+        // 打包结束后移除批量执行合约的执行器
+        contractService.removeBatchExecute();
+        tempBlock.getHeader().setStateRoot(stateRoot);
+        for(ContractResult result : contractResultList) {
+            result.setStateRoot(stateRoot);
+        }
+        // 更新世界状态
         bd.setStateRoot(stateRoot);
 
         whileTime = System.currentTimeMillis() - startWhile;
@@ -521,9 +530,9 @@ public class ConsensusProcess {
                 RedPunishData redPunishData = new RedPunishData();
                 redPunishData.setAddress(address);
                 redPunishData.setReasonCode(PunishReasonEnum.TOO_MUCH_YELLOW_PUNISH.getCode());
-                redPunishData.setEvidence(bestBlock.serialize());
                 redPunishTransaction.setTxData(redPunishData);
-                CoinData coinData = ConsensusTool.getStopAgentCoinData(redPunishData.getAddress(), bestBlock.getHeader().getTime() + PocConsensusConstant.RED_PUNISH_LOCK_TIME);
+                redPunishTransaction.setTime(self.getPackEndTime());
+                CoinData coinData = ConsensusTool.getStopAgentCoinData(redPunishData.getAddress(), redPunishTransaction.getTime() + PocConsensusConstant.RED_PUNISH_LOCK_TIME);
                 redPunishTransaction.setCoinData(coinData);
                 redPunishTransaction.setHash(NulsDigestData.calcDigestData(redPunishTransaction.serializeForHash()));
                 txList.add(redPunishTransaction);

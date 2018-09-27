@@ -53,6 +53,7 @@ import io.nuls.consensus.poc.util.ConsensusTool;
 import io.nuls.consensus.service.ConsensusService;
 import io.nuls.core.tools.array.ArraysTool;
 import io.nuls.core.tools.crypto.ECKey;
+import io.nuls.core.tools.json.JSONUtils;
 import io.nuls.core.tools.log.Log;
 import io.nuls.core.tools.page.Page;
 import io.nuls.core.tools.param.AssertUtil;
@@ -71,6 +72,7 @@ import io.nuls.kernel.utils.AddressTool;
 import io.nuls.kernel.utils.TransactionFeeCalculator;
 import io.nuls.kernel.utils.VarInt;
 import io.nuls.ledger.service.LedgerService;
+import io.nuls.protocol.model.validator.TxMaxSizeValidator;
 import io.nuls.protocol.service.TransactionService;
 import io.swagger.annotations.*;
 
@@ -270,16 +272,10 @@ public class PocConsensusResource {
             tx.getCoinData().getTo().add(result.getChange());
         }
         Na fee = TransactionFeeCalculator.getMaxFee(tx.size());
-        Result rs = accountLedgerService.getMaxAmountOfOnce(AddressTool.getAddress(form.getAgentAddress()), tx, TransactionFeeCalculator.OTHER_PRECE_PRE_1024_BYTES);
         Map<String, Long> map = new HashMap<>();
-        Long maxAmount = null;
-        if (rs.isSuccess()) {
-            maxAmount = ((Na) rs.getData()).getValue();
-        }
         map.put("fee", fee.getValue());
-        map.put("maxAmount", maxAmount);
-        rs.setData(map);
-        return Result.getSuccess().setData(rs).toRpcClientResult();
+        map.put("maxAmount", getMaxAmount(fee, form.getAgentAddress(), tx));
+        return Result.getSuccess().setData(map).toRpcClientResult();
     }
 
     @GET
@@ -311,16 +307,23 @@ public class PocConsensusResource {
             tx.getCoinData().getTo().add(result.getChange());
         }
         Na fee = TransactionFeeCalculator.getMaxFee(tx.size());
-        Result rs = accountLedgerService.getMaxAmountOfOnce(AddressTool.getAddress(form.getAddress()), tx, TransactionFeeCalculator.OTHER_PRECE_PRE_1024_BYTES);
         Map<String, Long> map = new HashMap<>();
-        Long maxAmount = null;
-        if (rs.isSuccess()) {
-            maxAmount = ((Na) rs.getData()).getValue();
-        }
         map.put("fee", fee.getValue());
-        map.put("maxAmount", maxAmount);
-        rs.setData(map);
-        return Result.getSuccess().setData(rs).toRpcClientResult();
+        map.put("maxAmount", getMaxAmount(fee, form.getAddress(), tx));
+        return Result.getSuccess().setData(map).toRpcClientResult();
+    }
+
+    //计算最大交易金额，如果手续费在最大值范围内则说明交易没有超出大小，则不需要计算直接返回null
+    private Long getMaxAmount(Na fee, String address, Transaction tx){
+        long feeMax = TransactionFeeCalculator.OTHER_PRECE_PRE_1024_BYTES.multiply(TxMaxSizeValidator.MAX_TX_BYTES).getValue();
+        Long maxAmount = null;
+        if(fee.getValue() > feeMax) {
+            Result rs = accountLedgerService.getMaxAmountOfOnce(AddressTool.getAddress(address), tx, TransactionFeeCalculator.OTHER_PRECE_PRE_1024_BYTES);
+            if (rs.isSuccess()) {
+                maxAmount = ((Na) rs.getData()).getValue();
+            }
+        }
+        return maxAmount;
     }
 
     @GET
@@ -362,16 +365,71 @@ public class PocConsensusResource {
         Na fee = TransactionFeeCalculator.getMaxFee(tx.size());
         coinData.getTo().get(0).setNa(coinData.getTo().get(0).getNa().subtract(fee));
         Na resultFee = TransactionFeeCalculator.getMaxFee(tx.size());
-        Result rs = accountLedgerService.getMaxAmountOfOnce(AddressTool.getAddress(address), tx, TransactionFeeCalculator.OTHER_PRECE_PRE_1024_BYTES);
         Map<String, Long> map = new HashMap<>();
-        Long maxAmount = null;
-        if (rs.isSuccess()) {
-            maxAmount = ((Na) rs.getData()).getValue();
+        map.put("fee", fee.getValue());
+        map.put("maxAmount", getMaxAmount(resultFee, address, tx));
+        return Result.getSuccess().setData(map).toRpcClientResult();
+    }
+
+    @GET
+    @Path("/withdraw/fee")
+    @Produces(MediaType.APPLICATION_JSON)
+    @ApiOperation(value = "get the fee of cancel deposit! 获取撤销委托的手续费", notes = "返回撤销委托交易手续费")
+    @ApiResponses(value = {
+            @ApiResponse(code = 200, message = "success", response = String.class)
+    })
+    public RpcClientResult getWithdrawFee(@ApiParam(name = "address", value = "委托账户地址", required = true)
+                                          @QueryParam("address") String address,
+                                          @ApiParam(name = "depositTxHash", value = "委托交易摘要", required = true)
+                                          @QueryParam("depositTxHash") String depositTxHash) throws NulsException, IOException {
+        AssertUtil.canNotEmpty(depositTxHash);
+        if (!NulsDigestData.validHash(depositTxHash)) {
+            return Result.getFailed(KernelErrorCode.PARAMETER_ERROR).toRpcClientResult();
         }
-        map.put("fee", resultFee.getValue());
-        map.put("maxAmount", maxAmount);
-        rs.setData(map);
-        return Result.getSuccess().setData(rs).toRpcClientResult();
+        AssertUtil.canNotEmpty(address);
+        if (!AddressTool.validAddress(address)) {
+            return Result.getFailed(AccountErrorCode.ADDRESS_ERROR).toRpcClientResult();
+        }
+        Account account = accountService.getAccount(address).getData();
+        if (null == account) {
+            return Result.getFailed(AccountErrorCode.ACCOUNT_NOT_EXIST).toRpcClientResult();
+        }
+        CancelDepositTransaction tx = new CancelDepositTransaction();
+        CancelDeposit cancelDeposit = new CancelDeposit();
+        NulsDigestData hash = NulsDigestData.fromDigestHex(depositTxHash);
+        DepositTransaction depositTransaction = (DepositTransaction) ledgerService.getTx(hash);
+        if (null == depositTransaction) {
+            return Result.getFailed(TransactionErrorCode.TX_NOT_EXIST).toRpcClientResult();
+        }
+        cancelDeposit.setAddress(account.getAddress().getAddressBytes());
+        cancelDeposit.setJoinTxHash(hash);
+        tx.setTxData(cancelDeposit);
+        CoinData coinData = new CoinData();
+        List<Coin> toList = new ArrayList<>();
+        toList.add(new Coin(cancelDeposit.getAddress(), depositTransaction.getTxData().getDeposit(), 0));
+        coinData.setTo(toList);
+        List<Coin> fromList = new ArrayList<>();
+        for (int index = 0; index < depositTransaction.getCoinData().getTo().size(); index++) {
+            Coin coin = depositTransaction.getCoinData().getTo().get(index);
+            if (coin.getLockTime() == -1L && coin.getNa().equals(depositTransaction.getTxData().getDeposit())) {
+                coin.setOwner(ArraysTool.concatenate(hash.serialize(), new VarInt(index).encode()));
+                fromList.add(coin);
+                break;
+            }
+        }
+        if (fromList.isEmpty()) {
+            return Result.getFailed(KernelErrorCode.DATA_ERROR).toRpcClientResult();
+        }
+        coinData.setFrom(fromList);
+        tx.setCoinData(coinData);
+        Na fee = TransactionFeeCalculator.getMaxFee(tx.size());
+        coinData.getTo().get(0).setNa(coinData.getTo().get(0).getNa().subtract(fee));
+        Na resultFee = TransactionFeeCalculator.getMaxFee(tx.size());
+
+        Map<String, Long> map = new HashMap<>();
+        map.put("fee", fee.getValue());
+        map.put("maxAmount", getMaxAmount(resultFee, account.getAddress().getBase58(), tx));
+        return Result.getSuccess().setData(map).toRpcClientResult();
     }
 
 
@@ -1050,73 +1108,6 @@ public class PocConsensusResource {
 
 
     @GET
-    @Path("/withdraw/fee")
-    @Produces(MediaType.APPLICATION_JSON)
-    @ApiOperation(value = "get the fee of cancel deposit! 获取撤销委托的手续费", notes = "返回撤销委托交易手续费")
-    @ApiResponses(value = {
-            @ApiResponse(code = 200, message = "success", response = String.class)
-    })
-    public RpcClientResult getWithdrawFee(@ApiParam(name = "address", value = "委托账户地址", required = true)
-                                          @QueryParam("address") String address,
-                                          @ApiParam(name = "depositTxHash", value = "委托交易摘要", required = true)
-                                          @QueryParam("depositTxHash") String depositTxHash) throws NulsException, IOException {
-        AssertUtil.canNotEmpty(depositTxHash);
-        if (!NulsDigestData.validHash(depositTxHash)) {
-            return Result.getFailed(KernelErrorCode.PARAMETER_ERROR).toRpcClientResult();
-        }
-        AssertUtil.canNotEmpty(address);
-        if (!AddressTool.validAddress(address)) {
-            return Result.getFailed(AccountErrorCode.ADDRESS_ERROR).toRpcClientResult();
-        }
-        Account account = accountService.getAccount(address).getData();
-        if (null == account) {
-            return Result.getFailed(AccountErrorCode.ACCOUNT_NOT_EXIST).toRpcClientResult();
-        }
-        CancelDepositTransaction tx = new CancelDepositTransaction();
-        CancelDeposit cancelDeposit = new CancelDeposit();
-        NulsDigestData hash = NulsDigestData.fromDigestHex(depositTxHash);
-        DepositTransaction depositTransaction = (DepositTransaction) ledgerService.getTx(hash);
-        if (null == depositTransaction) {
-            return Result.getFailed(TransactionErrorCode.TX_NOT_EXIST).toRpcClientResult();
-        }
-        cancelDeposit.setAddress(account.getAddress().getAddressBytes());
-        cancelDeposit.setJoinTxHash(hash);
-        tx.setTxData(cancelDeposit);
-        CoinData coinData = new CoinData();
-        List<Coin> toList = new ArrayList<>();
-        toList.add(new Coin(cancelDeposit.getAddress(), depositTransaction.getTxData().getDeposit(), 0));
-        coinData.setTo(toList);
-        List<Coin> fromList = new ArrayList<>();
-        for (int index = 0; index < depositTransaction.getCoinData().getTo().size(); index++) {
-            Coin coin = depositTransaction.getCoinData().getTo().get(index);
-            if (coin.getLockTime() == -1L && coin.getNa().equals(depositTransaction.getTxData().getDeposit())) {
-                coin.setOwner(ArraysTool.concatenate(hash.serialize(), new VarInt(index).encode()));
-                fromList.add(coin);
-                break;
-            }
-        }
-        if (fromList.isEmpty()) {
-            return Result.getFailed(KernelErrorCode.DATA_ERROR).toRpcClientResult();
-        }
-        coinData.setFrom(fromList);
-        tx.setCoinData(coinData);
-        Na fee = TransactionFeeCalculator.getMaxFee(tx.size());
-        coinData.getTo().get(0).setNa(coinData.getTo().get(0).getNa().subtract(fee));
-        Na resultFee = TransactionFeeCalculator.getMaxFee(tx.size());
-        Result rs = accountLedgerService.getMaxAmountOfOnce(account.getAddress().getAddressBytes(), tx, TransactionFeeCalculator.OTHER_PRECE_PRE_1024_BYTES);
-        Map<String, Long> map = new HashMap<>();
-        Long maxAmount = null;
-        if (rs.isSuccess()) {
-            maxAmount = ((Na) rs.getData()).getValue();
-        }
-        map.put("fee", resultFee.getValue());
-        map.put("maxAmount", maxAmount);
-        rs.setData(map);
-        return Result.getSuccess().setData(rs).toRpcClientResult();
-    }
-
-
-    @GET
     @Path("/redPunish/{address}")
     @Produces(MediaType.APPLICATION_JSON)
     @ApiOperation(value = "根据地址查询该账户是否被红牌惩罚过")
@@ -1147,14 +1138,12 @@ public class PocConsensusResource {
             @ApiResponse(code = 200, message = "success", response = String.class)
     })
     public RpcClientResult getCreateMultiAgentFee(
-            @BeanParam() GetCreateAgentFeeForm form) throws NulsException {
+            @BeanParam() GetCreateAgentFeeForm form) throws Exception {
         AssertUtil.canNotEmpty(form);
         AssertUtil.canNotEmpty(form.getAgentAddress(), "agent address can not be null");
         AssertUtil.canNotEmpty(form.getCommissionRate(), "commission rate can not be null");
         AssertUtil.canNotEmpty(form.getDeposit(), "deposit can not be null");
         AssertUtil.canNotEmpty(form.getPackingAddress(), "packing address can not be null");
-        AssertUtil.canNotEmpty(form.getPubkeys(), "signatures pubkeys can not be null");
-        AssertUtil.canNotEmpty(form.getM(), "Number of signatures can not be null");
         if (StringUtils.isBlank(form.getRewardAddress())) {
             form.setRewardAddress(form.getAgentAddress());
         }
@@ -1171,7 +1160,12 @@ public class PocConsensusResource {
         agent.setDeposit(Na.valueOf(form.getDeposit()));
         agent.setCommissionRate(form.getCommissionRate());
         tx.setTxData(agent);
-        Script redeemScript = ScriptBuilder.createNulsRedeemScript(form.getM(), form.getPubkeys());
+        Result<MultiSigAccount> sigAccountResult = accountService.getMultiSigAccount(form.getAgentAddress());
+        MultiSigAccount multiSigAccount = sigAccountResult.getData();
+        Script redeemScript = accountLedgerService.getRedeemScript(multiSigAccount);
+        if(redeemScript == null){
+            return Result.getFailed(AccountErrorCode.ACCOUNT_NOT_EXIST).toRpcClientResult();
+        }
         CoinData coinData = new CoinData();
         List<Coin> toList = new ArrayList<>();
         if (agent.getAgentAddress()[2] == 3) {
@@ -1189,7 +1183,7 @@ public class PocConsensusResource {
         }
         Na fee = TransactionFeeCalculator.getMaxFee(tx.size());
         //交易签名的长度为m*单个签名长度+赎回脚本长度
-        int scriptSignLenth = redeemScript.getProgram().length + form.getM() * 72;
+        int scriptSignLenth = redeemScript.getProgram().length + ((int)multiSigAccount.getM()) * 72;
         Result rs = accountLedgerService.getMultiMaxAmountOfOnce(AddressTool.getAddress(form.getAgentAddress()), tx, TransactionFeeCalculator.OTHER_PRECE_PRE_1024_BYTES,scriptSignLenth);
         Map<String, Long> map = new HashMap<>();
         Long maxAmount = null;
@@ -1209,20 +1203,23 @@ public class PocConsensusResource {
     @ApiResponses(value = {
             @ApiResponse(code = 200, message = "success", response = String.class)
     })
-    public RpcClientResult getMultiDepositFee(@BeanParam() GetDepositFeeForm form) throws NulsException {
+    public RpcClientResult getMultiDepositFee(@BeanParam() GetDepositFeeForm form) throws Exception {
         AssertUtil.canNotEmpty(form);
         AssertUtil.canNotEmpty(form.getAddress(), "address can not be null");
         AssertUtil.canNotEmpty(form.getAgentHash(), "agent hash can not be null");
         AssertUtil.canNotEmpty(form.getDeposit(), "deposit can not be null");
-        AssertUtil.canNotEmpty(form.getPubkeys(), "signatures pubkeys can not be null");
-        AssertUtil.canNotEmpty(form.getM(), "Number of signatures can not be null");
         DepositTransaction tx = new DepositTransaction();
         Deposit deposit = new Deposit();
         deposit.setAddress(AddressTool.getAddress(form.getAddress()));
         deposit.setAgentHash(NulsDigestData.fromDigestHex(form.getAgentHash()));
         deposit.setDeposit(Na.valueOf(form.getDeposit()));
         tx.setTxData(deposit);
-        Script redeemScript = ScriptBuilder.createNulsRedeemScript(form.getM(), form.getPubkeys());
+        Result<MultiSigAccount> sigAccountResult = accountService.getMultiSigAccount(form.getAddress());
+        MultiSigAccount multiSigAccount = sigAccountResult.getData();
+        Script redeemScript = accountLedgerService.getRedeemScript(multiSigAccount);
+        if(redeemScript == null){
+            return Result.getFailed(AccountErrorCode.ACCOUNT_NOT_EXIST).toRpcClientResult();
+        }
         CoinData coinData = new CoinData();
         List<Coin> toList = new ArrayList<>();
         toList.add(new Coin(deposit.getAddress(), deposit.getDeposit(), -1));
@@ -1235,7 +1232,7 @@ public class PocConsensusResource {
         }
         Na fee = TransactionFeeCalculator.getMaxFee(tx.size());
         //交易签名的长度为m*单个签名长度+赎回脚本长度
-        int scriptSignLenth = redeemScript.getProgram().length + form.getM() * 72;
+        int scriptSignLenth = redeemScript.getProgram().length + ((int)multiSigAccount.getM()) * 72;
         Result rs = accountLedgerService.getMultiMaxAmountOfOnce(AddressTool.getAddress(form.getAddress()), tx, TransactionFeeCalculator.OTHER_PRECE_PRE_1024_BYTES,scriptSignLenth);
         Map<String, Long> map = new HashMap<>();
         Long maxAmount = null;
@@ -1538,7 +1535,7 @@ public class PocConsensusResource {
         stopAgent.setCreateTxHash(agent.getTxHash());
         tx.setTime(TimeService.currentTimeMillis());
         tx.setTxData(stopAgent);
-        CoinData coinData = ConsensusTool.getStopMutilAgentCoinData(agent, TimeService.currentTimeMillis() + PocConsensusConstant.STOP_AGENT_LOCK_TIME, null);
+        CoinData coinData = ConsensusTool.getStopAgentCoinData(agent, TimeService.currentTimeMillis() + PocConsensusConstant.STOP_AGENT_LOCK_TIME, null);
         tx.setCoinData(coinData);
         Na fee = TransactionFeeCalculator.getMaxFee(tx.size());
         coinData.getTo().get(0).setNa(coinData.getTo().get(0).getNa().subtract(fee));
@@ -1577,7 +1574,7 @@ public class PocConsensusResource {
         if (!AddressTool.validAddress(form.getAddress()) || !AddressTool.validAddress(form.getSignAddress())) {
             return Result.getFailed(AccountErrorCode.ADDRESS_ERROR).toRpcClientResult();
         }
-        Account account = accountService.getAccount(form.getAddress()).getData();
+        Account account = accountService.getAccount(form.getSignAddress()).getData();
         if (null == account) {
             return Result.getFailed(AccountErrorCode.ACCOUNT_NOT_EXIST).toRpcClientResult();
         }
